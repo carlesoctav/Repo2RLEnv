@@ -91,6 +91,8 @@ def _llm_overrides(args: argparse.Namespace) -> dict[str, Any]:
         out["endpoint"] = args.llm_endpoint
     if getattr(args, "llm_key_env", None):
         out["api_key_env"] = args.llm_key_env
+    if getattr(args, "llm_reasoning_effort", None):
+        out["reasoning_effort"] = args.llm_reasoning_effort
     if out and not args.llm and not getattr(args, "config", None):
         raise SystemExit(
             "--llm-fallback / --llm-endpoint / --llm-key-env need --llm "
@@ -152,6 +154,10 @@ def _add_llm_args(parser: argparse.ArgumentParser, *, required: bool, fallback: 
         "--llm-key-env",
         metavar="VAR",
         help="env var holding the API key for the primary --llm (overrides the provider default)",
+    )
+    parser.add_argument(
+        "--llm-reasoning-effort",
+        help="reasoning effort for reasoning models (e.g. high, medium, low, or float)",
     )
 
 

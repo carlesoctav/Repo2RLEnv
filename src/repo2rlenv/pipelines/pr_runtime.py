@@ -271,6 +271,7 @@ def _build_instruction(
     *,
     token: str | None = None,
     provider=github,
+    hard_mode: bool = False,
 ) -> str:
     """Build the task instruction (problem statement).
 
@@ -284,6 +285,10 @@ def _build_instruction(
     Whatever text we use is then run through the info-leak strip + reflow so
     stray fix-PR links / #refs / SHAs / test-section noise don't leak through.
     """
+    if hard_mode:
+        body = (pr.body or "").strip()
+        return f"{pr.title}\n\n{body}".strip() if body else pr.title.strip()
+
     title = pr.title
     body = pr.body or ""
 
@@ -784,7 +789,12 @@ def targeted_test_cmds_for_pr(test_cmds: list[str], test_files: list[str]) -> li
     if not test_files:
         return test_cmds
 
-    py_files = [f for f in test_files if f.endswith(_PYTEST_TARGETABLE_EXT)]
+    py_files = [
+        f
+        for f in test_files
+        if f.endswith(_PYTEST_TARGETABLE_EXT)
+        and (Path(f).name.startswith("test_") or Path(f).name.endswith("_test.py"))
+    ]
     js_files = [f for f in test_files if f.endswith(_JEST_TARGETABLE_EXT)]
     go_pkgs = _go_packages_from_test_files(test_files)
 

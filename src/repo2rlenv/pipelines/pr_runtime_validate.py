@@ -49,6 +49,7 @@ def _build_stage_script(
     apply_patch: str | None,
     apply_test_patch: str | None,
     test_cmds: list[str],
+    rebuild_cmds: list[str] | None = None,
 ) -> str:
     """Build the shell script for one validation stage (pre-fix or post-fix).
 
@@ -69,12 +70,17 @@ def _build_stage_script(
         # Keep language dep/build dirs (node_modules, target, vendor, ...) so
         # the clean doesn't wipe deps the suite needs. See _GIT_CLEAN_EXCLUDES.
         "git clean -fdx -e .venv -e venv -e __pycache__ -e .tox "
-        "-e node_modules -e target -e vendor -e .gradle -e .next -e .pytest_cache || true",
+        "-e node_modules -e target -e vendor -e .gradle -e .next -e .pytest_cache -e pytest.ini -e conftest.py || true",
+        "if [ -f /sandbox/setup.py ]; then python3 /sandbox/setup.py --workspace /workspace >/dev/null 2>&1 || true; fi",
     ]
     if apply_patch and apply_patch.strip():
         parts.append(_heredoc_apply(apply_patch))
     if apply_test_patch and apply_test_patch.strip():
         parts.append(_heredoc_apply(apply_test_patch))
+    if rebuild_cmds:
+        for rcmd in rebuild_cmds:
+            if rcmd.strip():
+                parts.append(rcmd.strip())
     # Emit the markers to STDOUT via echo — NOT `: 'MARKER'`. With `set -x`,
     # a `:` no-op is traced to STDERR as `+ : MARKER`, while the test runner
     # writes to STDOUT. Slicing between stderr-only markers captured zero test
@@ -203,6 +209,42 @@ def _slice_test_output(output: str) -> str:
     return chunk[nl + 1 :] if nl != -1 else chunk
 
 
+def _compute_f2p_p2p(
+    pre_status: dict[str, str], post_status: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """Compute FAIL_TO_PASS and PASS_TO_PASS test name lists.
+
+    F2P counts ERROR->PASSED as well as FAILED->PASSED: a new test that
+    references a symbol the fix introduces *errors* (import/collection
+    failure) at base_commit rather than asserting-failing. Restricting F2P
+    to FAILED-only silently drops these, killing otherwise-valid candidates
+    on `no_fail_to_pass`. Both transitions mean "broken at base, fixed by
+    the gold patch" — the FAIL_TO_PASS contract.
+    """
+    fail_to_pass: list[str] = []
+    pass_to_pass: list[str] = []
+    for tname, pre_st in pre_status.items():
+        if tname in post_status:
+            post_st = post_status[tname]
+            if pre_st in ("FAILED", "ERROR") and post_st == "PASSED":
+                fail_to_pass.append(tname)
+            elif pre_st == "PASSED" and post_st == "PASSED":
+                pass_to_pass.append(tname)
+        elif "::" not in tname:
+            # File-level collection failure in pre_status (e.g. syntax error or missing
+            # module at base_commit). Pytest logs the file path as ERROR. In post-fix,
+            # the module exists so pytest collects individual test cases. Every post-fix
+            # test under this file that passed was blocked by the collection error at base.
+            file_prefix = f"{tname}::"
+            for post_k, post_st in post_status.items():
+                if post_k.startswith(file_prefix):
+                    if pre_st in ("FAILED", "ERROR") and post_st == "PASSED":
+                        fail_to_pass.append(post_k)
+                    elif pre_st == "PASSED" and post_st == "PASSED":
+                        pass_to_pass.append(post_k)
+    return sorted(set(fail_to_pass)), sorted(set(pass_to_pass))
+
+
 def validate_pr(
     *,
     sandbox: DockerSandbox,
@@ -210,6 +252,7 @@ def validate_pr(
     patch: str,
     test_patch: str,
     test_cmds: list[str],
+    rebuild_cmds: list[str] | None = None,
     language: str | None = None,
     timeout: int = 600,
 ) -> ValidationOutcome:
@@ -243,6 +286,7 @@ def validate_pr(
         apply_patch=None,
         apply_test_patch=test_patch,
         test_cmds=test_cmds,
+        rebuild_cmds=rebuild_cmds,
     )
     logger.info("validate_pr: running pre-fix stage at %s", base_commit[:12])
     pre = sandbox.exec(pre_script, timeout=timeout)
@@ -265,6 +309,7 @@ def validate_pr(
         apply_patch=patch,
         apply_test_patch=test_patch,
         test_cmds=test_cmds,
+        rebuild_cmds=rebuild_cmds,
     )
     logger.info("validate_pr: running post-fix stage")
     post = sandbox.exec(post_script, timeout=timeout)
@@ -279,22 +324,7 @@ def validate_pr(
             post_log=post_log,
         )
 
-    # Compute F2P / P2P. Both sets are over the union of test names seen.
-    #
-    # F2P counts ERROR->PASSED as well as FAILED->PASSED: a new test that
-    # references a symbol the fix introduces *errors* (import/collection
-    # failure) at base_commit rather than asserting-failing. Restricting F2P
-    # to FAILED-only silently drops these, killing otherwise-valid candidates
-    # on `no_fail_to_pass`. Both transitions mean "broken at base, fixed by
-    # the gold patch" — the FAIL_TO_PASS contract.
-    fail_to_pass: list[str] = []
-    pass_to_pass: list[str] = []
-    for tname, pre_st in pre_status.items():
-        post_st = post_status.get(tname)
-        if pre_st in ("FAILED", "ERROR") and post_st == "PASSED":
-            fail_to_pass.append(tname)
-        elif pre_st == "PASSED" and post_st == "PASSED":
-            pass_to_pass.append(tname)
+    fail_to_pass, pass_to_pass = _compute_f2p_p2p(pre_status, post_status)
 
     # Diagnostics: when yield is poor, this tells us whether the suite even
     # ran (test counts) and where transitions went — distinguishing "genuine
@@ -320,8 +350,8 @@ def validate_pr(
 
     return ValidationOutcome(
         status="verified",
-        fail_to_pass=sorted(fail_to_pass),
-        pass_to_pass=sorted(pass_to_pass),
+        fail_to_pass=sorted(set(fail_to_pass)),
+        pass_to_pass=sorted(set(pass_to_pass)),
         pre_log=pre_log,
         post_log=post_log,
     )

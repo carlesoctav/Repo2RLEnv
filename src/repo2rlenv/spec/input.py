@@ -14,6 +14,7 @@ class PipelineName(StrEnum):
     # Mined from upstream history
     PR_DIFF = "pr_diff"  # text-only PR mining (was: pr_mining_lite)
     PR_RUNTIME = "pr_runtime"  # PR mining w/ sandbox verification (was: pr_mining)
+    PR_SWEGEMMA_RUNTIME = "pr_swegemma_runtime"
     COMMIT_RUNTIME = "commit_runtime"  # commit-level mining w/ sandbox (was: commit_mining)
     CVE_PATCHES = "cve_patches"  # CVE patches as training data (was: cve_mining)
     # Synthesized by LLM
@@ -168,6 +169,7 @@ class LLMSpec(BaseModel):
     endpoint: str | None = None
     max_concurrent: int = 5
     timeout_sec: int = 120
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | float | None = None
     fallback: LLMSpec | None = None
 
     @property

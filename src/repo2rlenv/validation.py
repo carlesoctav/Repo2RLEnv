@@ -54,7 +54,7 @@ _LEGACY_REWARD_KINDS = {"diff_similarity_multi_component": "diff_similarity"}
 # Pipelines whose graded test.sh reads tests/{verifier.py,f2p.json,p2p.json}
 # (written by `pipelines.pr_runtime._runtime_aux_files`) whenever the
 # pipeline subtable carries a non-empty `fail_to_pass`.
-GRADED_VERIFIER_PIPELINES = frozenset({"pr_runtime", "commit_runtime", "cve_patches"})
+GRADED_VERIFIER_PIPELINES = frozenset({"pr_runtime", "commit_runtime", "cve_patches", "pr_swegemma_runtime"})
 # Pipelines that ship an LLM-authored test at tests/<subtable.test_filename>.
 TEST_FILE_PIPELINES = frozenset({"code_instruct", "equivalence_tests"})
 

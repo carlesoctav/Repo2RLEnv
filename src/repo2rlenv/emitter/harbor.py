@@ -56,6 +56,7 @@ class HarborTask:
     # Optional — only set for sandbox-required pipelines (e.g. pr_runtime).
     # Lite tasks (pr_diff) leave these as None; Harbor falls back to its own
     # default env / test runner for those.
+    docker_image: str | None = None
     environment_dockerfile: str | None = None
     test_script: str | None = None
     # Extra files written under the task dir (relative path -> content), e.g.
@@ -97,7 +98,15 @@ def write_harbor_task(task: HarborTask, dest_dir: Path) -> Path:
     # seed [metadata.repo2env.reproducibility] with mode=local_only and the
     # un-pullable local image ref. `repo2rlenv push` rewrites this in-place
     # to mode=registry / inline_dockerfile after the push step.
-    if task.environment_dockerfile is not None and "reproducibility" not in repo2env:
+    if task.docker_image is not None and "reproducibility" not in repo2env:
+        is_cloud = "/" in task.docker_image and not task.docker_image.startswith("local/")
+        repo2env["reproducibility"] = {
+            "mode": "registry" if is_cloud else "local_only",
+            "image_ref": task.docker_image,
+            "image_tag": task.docker_image,
+            "image_visibility": "public" if is_cloud else "private",
+        }
+    elif task.environment_dockerfile is not None and "reproducibility" not in repo2env:
         bootstrap_image = ""
         # Derive from the Dockerfile's first FROM line so we don't need the
         # caller to plumb it separately. Matches the same anchor used by
@@ -135,6 +144,8 @@ def write_harbor_task(task: HarborTask, dest_dir: Path) -> Path:
         "agent": {"timeout_sec": 1800.0},
         "verifier": {"timeout_sec": 300.0},
     }
+    if task.docker_image is not None:
+        payload["environment"] = {"docker_image": task.docker_image}
     (task_path / "task.toml").write_bytes(tomli_w.dumps(payload).encode("utf-8"))
 
     # instruction.md

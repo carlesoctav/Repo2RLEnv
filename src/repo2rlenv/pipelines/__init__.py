@@ -9,6 +9,7 @@ from repo2rlenv.pipelines.cve_patches import CVEPatchesPipeline
 from repo2rlenv.pipelines.equivalence_tests import EquivalenceTestsPipeline
 from repo2rlenv.pipelines.pr_diff import PRDiffPipeline
 from repo2rlenv.pipelines.pr_runtime import PRRuntimePipeline
+from repo2rlenv.pipelines.pr_swegemma_runtime import PRSWEGemmaRuntimePipeline
 from repo2rlenv.pipelines.pr_to_env import PRToEnvPipeline
 from repo2rlenv.pipelines.repo_mutate import RepoMutatePipeline
 from repo2rlenv.pipelines.repo_reconstruct import RepoReconstructPipeline
@@ -18,6 +19,7 @@ from repo2rlenv.pipelines.terminal_synth import TerminalSynthesisPipeline
 PIPELINES: dict[str, type[Pipeline]] = {
     "pr_diff": PRDiffPipeline,
     "pr_runtime": PRRuntimePipeline,
+    "pr_swegemma_runtime": PRSWEGemmaRuntimePipeline,
     "commit_runtime": CommitRuntimePipeline,
     "code_instruct": CodeInstructPipeline,
     "equivalence_tests": EquivalenceTestsPipeline,
@@ -29,14 +31,18 @@ PIPELINES: dict[str, type[Pipeline]] = {
     "task_evolve": TaskEvolutionPipeline,
 }
 
+PIPELINE_REGISTRY = PIPELINES
+
 __all__ = [
     "PIPELINES",
+    "PIPELINE_REGISTRY",
     "CVEPatchesPipeline",
     "CodeInstructPipeline",
     "CommitRuntimePipeline",
     "EquivalenceTestsPipeline",
     "PRDiffPipeline",
     "PRRuntimePipeline",
+    "PRSWEGemmaRuntimePipeline",
     "PRToEnvPipeline",
     "Pipeline",
     "PipelineResult",

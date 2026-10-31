@@ -112,6 +112,37 @@ def list_merged_prs(
     return summaries
 
 
+def fetch_pr_summary(
+    owner: str,
+    name: str,
+    number: int,
+    *,
+    token: str | None = None,
+) -> PullRequestSummary | None:
+    """Fetch a single MR summary by iid (mirrors github.fetch_pr_summary)."""
+    pid = _project_id(owner, name)
+    try:
+        r = _request(f"{GITLAB_API}/projects/{pid}/merge_requests/{number}", token)
+        changes = _request(f"{GITLAB_API}/projects/{pid}/merge_requests/{number}/changes", token)
+    except GitLabError:
+        return None
+    refs = changes.get("diff_refs") or {}
+    files = [c["new_path"] for c in changes.get("changes", []) if c.get("new_path")]
+    return PullRequestSummary(
+        number=r["iid"],
+        title=r.get("title") or "",
+        body=r.get("description") or "",
+        state=r.get("state") or "merged",
+        merged_at=r.get("merged_at"),
+        base_ref=r.get("target_branch") or "",
+        base_sha=refs.get("base_sha") or "",
+        head_sha=refs.get("head_sha") or r.get("sha") or "",
+        is_draft=bool(r.get("draft")),
+        url=r.get("web_url") or "",
+        changed_files=files,
+    )
+
+
 def fetch_pr_diff(owner: str, name: str, number: int, *, token: str | None = None) -> str:
     """Return the MR's unified diff via the `<mr>.diff` web route (git-format).
 

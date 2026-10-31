@@ -57,7 +57,7 @@ class AgentOutcome:
 # Observation: header so a runaway LLM that hallucinates its own observation
 # inline doesn't get that fake text fed into bash as part of the command.
 _ACTION_RE = re.compile(
-    r"Thought:\s*(?P<thought>.*?)\n+Action:\s*(?P<action>\w+)\s*\n+Input:\s*"
+    r"(?:Thought:\s*(?P<thought>.*?)\s+)?Action:\s*(?P<action>\w+)\s+Input:\s*"
     r"(?P<input>.*?)(?=\n+Action:|\n+Thought:|\n+Observation:|\Z)",
     re.DOTALL | re.IGNORECASE,
 )
@@ -74,14 +74,15 @@ _TOOL_CALL_TAGS = (
 )
 
 
-def _sanitize_input(inp: str) -> str:
+def _sanitize_input(inp: str, action_name: str = "") -> str:
     """Strip trailing tool-call XML artifacts + simulated Observation: tails."""
     s = inp.strip()
-    # Drop anything after a simulated `Observation:` header inside the input —
-    # models sometimes write the command AND simulate its output.
-    obs_match = re.search(r"\n\s*Observation\s*:", s, flags=re.IGNORECASE)
-    if obs_match:
-        s = s[: obs_match.start()].rstrip()
+    # Drop anything after a simulated `Observation:`, `Thought:`, or `BASH{` tail.
+    tail_match = re.search(
+        r"(?:\n\s*Observation\s*:|Thought\s*:|BASH\s*\{)", s, flags=re.IGNORECASE
+    )
+    if tail_match:
+        s = s[: tail_match.start()].rstrip()
     # Repeatedly strip known tag artifacts from the end.
     changed = True
     while changed:
@@ -92,6 +93,15 @@ def _sanitize_input(inp: str) -> str:
                 s = stripped[: -len(tag)].rstrip()
                 changed = True
                 break
+    if action_name != "SAVE_SETUP" and s.startswith("{") and s.endswith("}"):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                val = obj.get("input") or obj.get("command") or obj.get("path")
+                if isinstance(val, str):
+                    s = val.strip()
+        except json.JSONDecodeError:
+            pass
     return s
 
 
@@ -100,9 +110,9 @@ def parse_action(text: str) -> tuple[str, AgentAction]:
     m = _ACTION_RE.search(text)
     if not m:
         return ("", AgentAction(name="INVALID", input=text.strip()[:500], raw=text))
-    thought = m.group("thought").strip()
+    thought = (m.group("thought") or "").strip()
     name = m.group("action").strip().upper()
-    inp = _sanitize_input(m.group("input"))
+    inp = _sanitize_input(m.group("input"), name)
     if name not in ("BASH", "READ_FILE", "LIST_DIR", "SAVE_SETUP", "GIVE_UP"):
         return (thought, AgentAction(name="INVALID", input=inp, raw=text))
     return (thought, AgentAction(name=name, input=inp, raw=text))  # type: ignore[arg-type]
@@ -163,13 +173,14 @@ def run_agent_loop(
     max_seconds: int = 1800,
     max_spend_usd: float | None = None,
     platform: str = "linux/amd64",
+    initial_prompt: str | None = None,
     on_turn: Callable[[AgentTurn, float], None] | None = None,
     on_thinking: Callable[[int], None] | None = None,
     on_executing: Callable[[int, AgentAction], None] | None = None,
 ) -> AgentOutcome:
     """Drive the bootstrap agent until it succeeds, gives up, or hits a budget."""
     system = system_prompt(language=language, base_image=base_image, platform=platform)
-    history: list[str] = [initial_user_prompt(repo=repo, ref=ref)]
+    history: list[str] = [initial_prompt or initial_user_prompt(repo=repo, ref=ref)]
     transcript: list[AgentTurn] = []
     total_cost = 0.0
     start = time.monotonic()
@@ -200,7 +211,13 @@ def run_agent_loop(
 
         user_msg = "\n\n".join(history)
         turn_start = time.monotonic()
-        response = complete(llm, system=system, user=user_msg, max_tokens=2048, temperature=0.2)
+        response = complete(
+            llm,
+            system=system,
+            user=user_msg,
+            max_tokens=16384 if llm.reasoning_effort else 2048,
+            temperature=0.2,
+        )
         total_cost += response.cost_usd
         thought, action = parse_action(response.content)
         logger.info(
@@ -257,7 +274,7 @@ def run_agent_loop(
         # BASH / READ_FILE / LIST_DIR
         observation = _execute(action, sandbox)
         history.append(
-            f"Action: {action.name}\nInput: {action.input}\n\nObservation:\n{observation}\n"
+            f"Thought: {thought}\nAction: {action.name}\nInput: {action.input}\n\nObservation:\n{observation}\n"
         )
         turn = AgentTurn(
             step=step,

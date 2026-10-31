@@ -8,7 +8,11 @@ import subprocess
 import pytest
 
 from repo2rlenv.log_parsers import parse_logs
-from repo2rlenv.pipelines.pr_runtime_validate import _build_stage_script, _slice_test_output
+from repo2rlenv.pipelines.pr_runtime_validate import (
+    _build_stage_script,
+    _compute_f2p_p2p,
+    _slice_test_output,
+)
 
 needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
@@ -163,3 +167,68 @@ def test_nonzero_test_exit_still_closes_the_block():
 def test_trailing_comment_and_semicolon_still_run():
     assert _run_test_block(["echo ok # trailing comment"])[0].strip() == "ok"
     assert _run_test_block(["echo ok;"])[0].strip() == "ok"
+
+
+def test_compute_f2p_p2p_direct_match():
+    pre_status = {
+        "tests/test_a.py::test_fail": "FAILED",
+        "tests/test_a.py::test_err": "ERROR",
+        "tests/test_a.py::test_pass": "PASSED",
+        "tests/test_a.py::test_still_fail": "FAILED",
+        "tests/test_a.py::test_regressed": "PASSED",
+    }
+    post_status = {
+        "tests/test_a.py::test_fail": "PASSED",
+        "tests/test_a.py::test_err": "PASSED",
+        "tests/test_a.py::test_pass": "PASSED",
+        "tests/test_a.py::test_still_fail": "FAILED",
+        "tests/test_a.py::test_regressed": "FAILED",
+    }
+    f2p, p2p = _compute_f2p_p2p(pre_status, post_status)
+    assert f2p == ["tests/test_a.py::test_err", "tests/test_a.py::test_fail"]
+    assert p2p == ["tests/test_a.py::test_pass"]
+
+
+def test_compute_f2p_p2p_file_level_collection_failure():
+    pre_status = {
+        "tests/test_broken_module.py": "ERROR",
+        "tests/test_other.py::test_keep": "PASSED",
+    }
+    post_status = {
+        "tests/test_broken_module.py::test_one": "PASSED",
+        "tests/test_broken_module.py::test_two": "PASSED",
+        "tests/test_broken_module.py::test_three": "FAILED",
+        "tests/test_other.py::test_keep": "PASSED",
+    }
+    f2p, p2p = _compute_f2p_p2p(pre_status, post_status)
+    assert f2p == [
+        "tests/test_broken_module.py::test_one",
+        "tests/test_broken_module.py::test_two",
+    ]
+    assert p2p == ["tests/test_other.py::test_keep"]
+
+
+def test_compute_f2p_p2p_file_level_collection_pass():
+    pre_status = {
+        "tests/test_mod.py": "PASSED",
+    }
+    post_status = {
+        "tests/test_mod.py::test_1": "PASSED",
+        "tests/test_mod.py::test_2": "FAILED",
+    }
+    f2p, p2p = _compute_f2p_p2p(pre_status, post_status)
+    assert f2p == []
+    assert p2p == ["tests/test_mod.py::test_1"]
+
+
+def test_compute_f2p_p2p_skips_unmatched_test_item_with_colons():
+    pre_status = {
+        "tests/test_mod.py::test_removed": "FAILED",
+    }
+    post_status = {
+        "tests/test_mod.py::test_removed_2": "PASSED",
+    }
+    f2p, p2p = _compute_f2p_p2p(pre_status, post_status)
+    assert f2p == []
+    assert p2p == []
+

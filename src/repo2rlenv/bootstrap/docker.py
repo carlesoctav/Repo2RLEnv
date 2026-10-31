@@ -196,17 +196,24 @@ class DockerSandbox:
         with DockerSandbox.start(...) as sb: ...
     """
 
-    def __init__(self, container_id: str, repo_mount: str, platform: str):
+    def __init__(
+        self,
+        container_id: str,
+        repo_mount: str,
+        platform: str,
+        workdir: str = "/workspace",
+    ):
         self.container_id = container_id
         self.repo_mount = repo_mount
         self.platform = platform
+        self.workdir = workdir
         self._alive = True
 
     @classmethod
     def start(
         cls,
         base_image: str,
-        repo_dir: Path,
+        repo_dir: Path | None = None,
         *,
         platform: str = "linux/amd64",
         workdir: str = "/workspace",
@@ -269,8 +276,6 @@ class DockerSandbox:
             platform,
             "--name",
             name,
-            "-w",
-            workdir,
         ]
         for k, v in (env or {}).items():
             args.extend(["-e", f"{k}={v}"])
@@ -287,27 +292,36 @@ class DockerSandbox:
             _run(["docker", "rm", "-f", cid], timeout=10)
             raise DockerError(f"mkdir {workdir} failed: {mk.stderr.strip()[:400]}")
         # `docker cp <src>/. <cid>:<dest>` copies contents (not the dir itself)
-        cp = _run(
-            ["docker", "cp", f"{repo_dir.resolve()}/.", f"{cid}:{workdir}"],
-            timeout=180,
-        )
-        if not cp.ok:
-            _run(["docker", "rm", "-f", cid], timeout=10)
-            raise DockerError(f"docker cp into container failed: {cp.stderr.strip()[:400]}")
+        if repo_dir is not None:
+            subprocess.run(
+                ["chmod", "-R", "a+rX", str(repo_dir.resolve()), str(repo_dir.resolve().parent)],
+                check=False,
+            )
+            cp = _run(
+                ["docker", "cp", f"{repo_dir.resolve()}/.", f"{cid}:{workdir}"],
+                timeout=180,
+            )
+            if not cp.ok:
+                _run(["docker", "rm", "-f", cid], timeout=10)
+                raise DockerError(f"docker cp into container failed: {cp.stderr.strip()[:400]}")
         if on_phase is not None:
             try:
                 on_phase("sandbox_done", {"detail": name})
             except Exception:
                 pass
-        return cls(container_id=cid, repo_mount=str(repo_dir.resolve()), platform=platform)
+        return cls(
+            container_id=cid,
+            repo_mount=str(repo_dir.resolve()) if repo_dir is not None else "",
+            platform=platform,
+            workdir=workdir,
+        )
 
     def exec(self, command: str, *, timeout: int = 300) -> ExecResult:
         """Run a shell command inside the container. State persists across calls."""
         if not self._alive:
             raise DockerError("sandbox has been cleaned up; cannot exec")
-        # Wrap in bash -lc so users can write multi-line / piped commands.
-        args = ["docker", "exec", self.container_id, "bash", "-lc", command]
-        return _run(args, timeout=timeout)
+        args = ["docker", "exec", "-w", self.workdir, "-i", self.container_id, "bash", "-l"]
+        return _run(args, timeout=timeout, input_text=command)
 
     def read_file(self, path: str, *, max_bytes: int = 50_000) -> str:
         """Read a file path inside the container, capped at max_bytes."""
@@ -330,7 +344,10 @@ class DockerSandbox:
         """
         if not self._alive:
             raise DockerError("sandbox has been cleaned up; cannot commit")
-        r = _run(["docker", "commit", "-m", message, self.container_id, tag], timeout=timeout)
+        r = _run(
+            ["docker", "commit", "-c", f"WORKDIR {self.workdir}", self.container_id, tag],
+            timeout=timeout,
+        )
         if not r.ok:
             raise DockerError(f"docker commit failed: {r.stderr.strip()[:400]}")
         # Resolve the image's RepoDigests (only present after a push) OR the local Id

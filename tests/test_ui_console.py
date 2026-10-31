@@ -64,3 +64,13 @@ def test_utf8_and_non_reconfigurable_streams_are_left_alone(monkeypatch: pytest.
     ensure_utf8_output()
 
     assert utf8.encoding == "UTF8"
+
+
+def test_install_logging_no_markup_error(monkeypatch: pytest.MonkeyPatch):
+    import logging
+    console_mod = sys.modules["repo2rlenv.ui.console"]
+    monkeypatch.setattr(console_mod, "_LOGGING_INSTALLED", False)
+    console_mod.install_logging()
+    logger = logging.getLogger("test_markup")
+    logger.info("Some message with [/wrapped-dependency] and [other/tag]")
+

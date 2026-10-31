@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import Literal
 
 from rich.console import Group, RenderableType
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.text import Text
@@ -98,7 +99,7 @@ class GenerationView:
             self.errors += 1
 
         self._progress.update(
-            self._progress_task, completed=self.processed, description=f"Processing {name[:50]}"
+            self._progress_task, completed=self.processed, description=f"Processing {escape(name[:50])}"
         )
         self._refresh()
 

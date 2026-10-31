@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from repo2rlenv.spec.recipe_options import (
     CodeMidasOptions,
@@ -48,6 +48,21 @@ class PRRuntimeOptions(_BaseOptions):
     skip_drafts: bool = True
     require_linked_issue: bool = False  # `False` to preserve historical behaviour; see https://github.com/huggingface/Repo2RLEnv/pull/185
     languages: list[str] = ["python"]
+    prs: list[int] | None = None
+
+    @field_validator("prs", mode="before")
+    @classmethod
+    def _coerce_prs(cls, v: Any) -> list[int] | None:
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return [v]
+        if isinstance(v, str):
+            cleaned = v.strip()
+            if cleaned.startswith("[") and cleaned.endswith("]"):
+                cleaned = cleaned[1:-1]
+            return [int(item.strip()) for item in cleaned.split(",") if item.strip()]
+        return [int(item) for item in v]
 
     # --- Validation ---
     require_fail_to_pass: bool = True  # skip PRs whose F2P set is empty after validation
@@ -63,6 +78,10 @@ class PRRuntimeOptions(_BaseOptions):
     # --- Structural filters (cheap, applied before validation) ---
     require_new_test_funcs: bool = True  # test_patch must add ≥1 new test func/class
     skip_ci_only: bool = True  # auto-skip when source patch is 100% under .github/
+
+    # --- Execution & Generation Options ---
+    hard_mode: bool = False
+    concurrency: int = 1
 
 
 class PRDiffOptions(_BaseOptions):
@@ -274,6 +293,7 @@ class EquivalenceTestsOptions(_BaseOptions):
 
 OPTIONS_REGISTRY: dict[str, type[BaseModel]] = {
     "pr_runtime": PRRuntimeOptions,
+    "pr_swegemma_runtime": PRRuntimeOptions,
     "pr_diff": PRDiffOptions,
     "commit_runtime": CommitRuntimeOptions,
     "code_instruct": CodeInstructOptions,
@@ -287,6 +307,8 @@ OPTIONS_REGISTRY: dict[str, type[BaseModel]] = {
     "env_repair": EnvironmentRepairOptions,
     "task_evolve": TaskEvolutionOptions,
 }
+
+PIPELINE_OPTIONS_REGISTRY = OPTIONS_REGISTRY
 
 
 RECIPE_OPTIONS_REGISTRY: dict[str, type[BaseModel]] = {

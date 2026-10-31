@@ -43,7 +43,7 @@ _UNIVERSAL_PITFALLS: tuple[str, ...] = (
 
 PRESETS: dict[LanguageHint, LanguagePreset] = {
     LanguageHint.PYTHON: LanguagePreset(
-        base_image="python:3.12-slim",
+        base_image="python:3.13",
         apt_packages=("git", "build-essential", "curl", "ca-certificates"),
         install_hints=(
             "Look for `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`.",
@@ -53,6 +53,13 @@ PRESETS: dict[LanguageHint, LanguagePreset] = {
             "If you MUST use uv/venv (e.g. the project's deps force it), remember test_cmds "
             "will run in a fresh `bash -lc` shell — every test_cmd entry must include "
             "`. /workspace/.venv/bin/activate &&` as a prefix.",
+            "Inspect `pyproject.toml` for both `[project.optional-dependencies]` and PEP 735 `[dependency-groups]` "
+            "(e.g. `dev`, `test`, `tests`), plus any `requirements*.txt`. Install all test/dev dependencies "
+            "system-wide (`pip install ...`) and verify `python -m pytest --collect-only -q` has zero "
+            "`ModuleNotFoundError` / collection errors before calling `SAVE_SETUP`.",
+            "If a repo's tests import optional libraries like `orjson`, `ujson`, `dirty-equals`, `inline-snapshot`, "
+            "`sqlmodel`, `peewee`, `passlib`, `bcrypt`, `pyjwt`, `email-validator`, `python-multipart`, `trio`, "
+            "`aiosqlite`, install them system-wide with `pip install`.",
             "Prefer `pip install -e .[dev,test]` or `[test]` extras when declared; "
             "fall back to `-e .` plus the explicit dev/test requirements file. "
             "Some projects declare optional components via separate extras (e.g. black's `[d]` "

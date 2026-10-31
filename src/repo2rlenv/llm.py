@@ -7,6 +7,7 @@ LiteLLM's `completion_cost()` to attach a USD estimate.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -15,6 +16,73 @@ from repo2rlenv.auth import LLM_KEY_ENV_DEFAULTS, resolve_llm_api_key
 from repo2rlenv.spec.input import LLMSpec
 
 logger = logging.getLogger(__name__)
+
+_AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "BASH",
+            "description": "Run a shell command in /workspace",
+            "parameters": {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "READ_FILE",
+            "description": "Read a file inside the container",
+            "parameters": {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "LIST_DIR",
+            "description": "List directory entries inside the container",
+            "parameters": {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "SAVE_SETUP",
+            "description": "Declare bootstrap success with rebuild_cmds and test_cmds",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rebuild_cmds": {"type": "array", "items": {"type": "string"}},
+                    "test_cmds": {"type": "array", "items": {"type": "string"}},
+                    "summary": {"type": "string"},
+                },
+                "required": ["rebuild_cmds", "test_cmds"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "GIVE_UP",
+            "description": "Give up on bootstrapping",
+            "parameters": {
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        },
+    },
+]
 
 # Sent with `endpoint` to providers whose client insists on *some* key string
 # (`openai/<model>` against vLLM, Ollama, llama.cpp — the server ignores it).
@@ -163,8 +231,18 @@ def _do_complete(
     kwargs.update(completion_token_limit(spec, max_tokens))
     if api_key is not None:
         kwargs["api_key"] = api_key
-    # Newer reasoning-focused models (Opus 4.7+, GPT-5+) reject `temperature`.
-    if _supports_temperature(spec.model):
+    if spec.reasoning_effort is not None:
+        extra: dict = {}
+        if isinstance(spec.reasoning_effort, (int, float)):
+            extra["reasoning_effort"] = float(spec.reasoning_effort)
+        else:
+            kwargs["reasoning_effort"] = spec.reasoning_effort
+        if response_schema is None:
+            extra["tools"] = _AGENT_TOOLS
+            extra["tool_choice"] = "auto"
+        if extra:
+            kwargs["extra_body"] = extra
+    elif _supports_temperature(spec.model):
         kwargs["temperature"] = temperature
     if spec.endpoint:
         kwargs["api_base"] = spec.endpoint
@@ -184,6 +262,26 @@ def _do_complete(
     response = litellm.completion(**kwargs)
     choice = response.choices[0]
     content = choice.message.content or ""
+    if not content and choice.message.tool_calls:
+        tc = choice.message.tool_calls[0]
+        fn_name = tc.function.name.upper()
+        raw_args = tc.function.arguments or "{}"
+        try:
+            parsed_args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            parsed_args = raw_args
+        if fn_name == "SAVE_SETUP" and isinstance(parsed_args, dict):
+            inp = json.dumps(parsed_args)
+        elif isinstance(parsed_args, dict):
+            inp = str(
+                parsed_args.get("input")
+                or parsed_args.get("command")
+                or parsed_args.get("path")
+                or raw_args
+            )
+        else:
+            inp = str(parsed_args)
+        content = f"Thought: Execute {fn_name}\nAction: {fn_name}\nInput: {inp}"
 
     usage_obj = getattr(response, "usage", None)
     prompt_tokens = 0
@@ -226,6 +324,8 @@ def complete(
 
     Honors `LLMSpec.endpoint` for self-hosted backends.
     """
+    if spec.reasoning_effort is not None and max_tokens < 16384:
+        max_tokens = 16384
     try:
         return _do_complete(
             spec,

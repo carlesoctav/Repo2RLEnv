@@ -841,3 +841,354 @@ def test_pre_filter_require_linked_issue_default_keeps_without_linked_issue():
     pipeline = _make_pipeline(None)
     pr = _make_pr("Fix the parser crash.\n\nNo issue link here.")
     assert pipeline._pre_filter(pr) is None
+
+
+def test_pr_runtime_options_prs_parsing():
+    from repo2rlenv.spec.options import PRRuntimeOptions
+
+    assert PRRuntimeOptions(prs=4077).prs == [4077]
+    assert PRRuntimeOptions(prs="4077").prs == [4077]
+    assert PRRuntimeOptions(prs="4077,11194").prs == [4077, 11194]
+    assert PRRuntimeOptions(prs="[4077]").prs == [4077]
+    assert PRRuntimeOptions(prs="[4077, 11194]").prs == [4077, 11194]
+    assert PRRuntimeOptions(prs=[4077, 11194]).prs == [4077, 11194]
+    assert PRRuntimeOptions().prs is None
+
+
+def test_fetch_pr_summary(monkeypatch):
+    import json
+
+    from repo2rlenv import github
+
+    gh_data = {
+        "number": 4077,
+        "title": "proxy isatty",
+        "body": "Fixes #4041",
+        "state": "MERGED",
+        "mergedAt": "2026-04-12T04:11:19Z",
+        "baseRefName": "master",
+        "headRefOid": "494b795031782c694297d2db78bd04fb8c82f590",
+        "isDraft": False,
+        "url": "https://github.com/Textualize/rich/pull/4077",
+        "files": [{"path": "rich/file_proxy.py"}, {"path": "tests/test_file_proxy.py"}],
+    }
+    monkeypatch.setattr(github, "_run_gh", lambda args, token=None: json.dumps(gh_data))
+    monkeypatch.setattr(github, "_fetch_base_sha", lambda owner, name, num, token=None: "58ac15120fe254886c10d6253667733c83604cb4")
+
+    summary = github.fetch_pr_summary("Textualize", "rich", 4077)
+    assert summary is not None
+    assert summary.number == 4077
+    assert summary.title == "proxy isatty"
+    assert summary.base_sha == "58ac15120fe254886c10d6253667733c83604cb4"
+    assert summary.changed_files == ["rich/file_proxy.py", "tests/test_file_proxy.py"]
+
+
+def _make_swegemma_pipeline(require_linked_issue: bool | None = None):
+    from repo2rlenv.pipelines.pr_swegemma_runtime import PRSWEGemmaRuntimePipeline
+    from repo2rlenv.spec.input import (
+        GenerationInput,
+        LLMSpec,
+        OutputSpec,
+        PipelineName,
+        PipelineSpec,
+        RepoSpec,
+    )
+    from repo2rlenv.spec.options import PRRuntimeOptions
+
+    gen_input = GenerationInput(
+        repo=RepoSpec(url="huggingface/trl"),
+        pipeline=PipelineSpec(name=PipelineName.PR_SWEGEMMA_RUNTIME, options={}),
+        llm=LLMSpec(provider="anthropic", model="claude-sonnet-4-6"),
+        output=OutputSpec(destination="./out", org="x", dataset_name="y"),
+    )
+    options_kwargs = {}
+    if require_linked_issue is not None:
+        options_kwargs["require_linked_issue"] = require_linked_issue
+    options = PRRuntimeOptions(**options_kwargs)
+    bootstrap = BootstrapResult(
+        image_digest="sha256:" + "0" * 64,
+        image_tag="local/test",
+        language=LanguageHint.PYTHON,
+        repo="huggingface/trl",
+        ref="a" * 40,
+        rebuild_cmds=[],
+        test_cmds=["pytest"],
+        smoke_passed=True,
+        iterations=1,
+        build_time_sec=1.0,
+        llm_provider="anthropic/claude-sonnet-4-6",
+    )
+    return PRSWEGemmaRuntimePipeline(gen_input, options, bootstrap=bootstrap)
+
+
+def test_pr_runtime_pipeline_with_specific_prs(monkeypatch, tmp_path):
+    from repo2rlenv import github
+    from repo2rlenv.github import PullRequestSummary
+
+    pipeline = _make_swegemma_pipeline()
+    pipeline.options.prs = [4077]
+
+    pr_mock = PullRequestSummary(
+        number=4077,
+        title="proxy isatty",
+        body="Fixes #4041",
+        state="MERGED",
+        merged_at="2026-04-12T04:11:19Z",
+        base_ref="master",
+        base_sha="58ac15120fe254886c10d6253667733c83604cb4",
+        head_sha="494b795031782c694297d2db78bd04fb8c82f590",
+        is_draft=False,
+        url="https://github.com/Textualize/rich/pull/4077",
+        changed_files=["rich/file_proxy.py", "tests/test_file_proxy.py"],
+    )
+
+    fetch_called = []
+    def fake_fetch_pr_summary(owner, name, num, token=None):
+        fetch_called.append(num)
+        return pr_mock
+
+    monkeypatch.setattr(github, "fetch_pr_summary", fake_fetch_pr_summary)
+    monkeypatch.setattr(github, "fetch_pr_diff", lambda o, n, num, token=None: (
+        "diff --git a/rich/file_proxy.py b/rich/file_proxy.py\n"
+        "--- a/rich/file_proxy.py\n+++ b/rich/file_proxy.py\n@@ -1,1 +1,2 @@\n+x = 1\n"
+        "diff --git a/tests/test_file_proxy.py b/tests/test_file_proxy.py\n"
+        "--- a/tests/test_file_proxy.py\n+++ b/tests/test_file_proxy.py\n@@ -1,1 +1,3 @@\n+def test_new():\n+    pass\n"
+    ))
+    pipeline.options.skip_validation = True
+
+    result = pipeline.run(tmp_path)
+    assert fetch_called == [4077]
+    assert result.emitted == 1
+
+
+def test_start_validation_sandbox_runs_setup_py_if_present(monkeypatch):
+    from repo2rlenv.bootstrap.docker import DockerSandbox, ExecResult
+
+    pipeline = _make_swegemma_pipeline()
+    executed_cmds = []
+
+    class FakeSandbox:
+        def exec(self, cmd, timeout=300):
+            executed_cmds.append((cmd, timeout))
+            if "test -d /workspace/.git" in cmd:
+                return ExecResult(exit_code=1, stdout="", stderr="", duration_sec=0.1)
+            if "git clone" in cmd:
+                return ExecResult(exit_code=0, stdout="", stderr="", duration_sec=0.1)
+            if "test -f /sandbox/setup.py" in cmd:
+                return ExecResult(exit_code=0, stdout="OK\n", stderr="", duration_sec=0.1)
+            return ExecResult(exit_code=0, stdout="", stderr="", duration_sec=0.1)
+
+    fake_sb = FakeSandbox()
+    monkeypatch.setattr(DockerSandbox, "start", lambda **kwargs: fake_sb)
+
+    sb = pipeline._start_validation_sandbox()
+    assert sb is fake_sb
+    commands = [c[0] for c in executed_cmds]
+    assert any("python3 /sandbox/setup.py --workspace /workspace huggingface/trl" in c for c in commands)
+    assert not any("pip install -e ." in c for c in commands)
+
+
+def test_start_validation_sandbox_falls_back_to_pip_install(monkeypatch):
+    from repo2rlenv.bootstrap.docker import DockerSandbox, ExecResult
+
+    pipeline = _make_swegemma_pipeline()
+    executed_cmds = []
+
+    class FakeSandbox:
+        def exec(self, cmd, timeout=300):
+            executed_cmds.append((cmd, timeout))
+            if "test -d /workspace/.git" in cmd:
+                return ExecResult(exit_code=1, stdout="", stderr="", duration_sec=0.1)
+            if "git clone" in cmd:
+                return ExecResult(exit_code=0, stdout="", stderr="", duration_sec=0.1)
+            if "test -f /sandbox/setup.py" in cmd:
+                return ExecResult(exit_code=1, stdout="", stderr="", duration_sec=0.1)
+            return ExecResult(exit_code=0, stdout="", stderr="", duration_sec=0.1)
+
+    fake_sb = FakeSandbox()
+    monkeypatch.setattr(DockerSandbox, "start", lambda **kwargs: fake_sb)
+
+    sb = pipeline._start_validation_sandbox()
+    assert sb is fake_sb
+    commands = [c[0] for c in executed_cmds]
+    assert not any("python3 /sandbox/setup.py" in c for c in commands)
+    assert any("pip install -e . --no-build-isolation --find-links /wheels" in c for c in commands)
+
+
+def test_pr_swegemma_pre_filter_keeps_non_bug_pr_when_prs_specified():
+    pipeline = _make_swegemma_pipeline()
+    pipeline.options.prs = [15661]
+    pr = _make_pr("Body text", title="Revert 'Upgrade starlette to 0.46.1' (#15661)")
+    assert pipeline._pre_filter(pr) is None
+
+    pipeline.options.prs = None
+    assert pipeline._pre_filter(pr) == "non_bug_pr"
+
+
+def test_pr_swegemma_structural_filter_allows_existing_tests_when_prs_specified():
+    pipeline = _make_swegemma_pipeline()
+    source_patch = (
+        "diff --git a/src/foo.py b/src/foo.py\n"
+        "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1,1 +1,2 @@\n+x = 1\n"
+    )
+    test_patch = (
+        "diff --git a/tests/test_foo.py b/tests/test_foo.py\n"
+        "--- a/tests/test_foo.py\n+++ b/tests/test_foo.py\n@@ -1,2 +1,2 @@\n-    assert 1 == 2\n+    assert 1 == 1\n"
+    )
+
+    pipeline.options.prs = [14492]
+    assert pipeline._structural_quality_filter(source_patch, test_patch) is None
+
+    pipeline.options.prs = None
+    assert pipeline._structural_quality_filter(source_patch, test_patch) == "no_new_test_funcs"
+
+
+def test_build_instruction_hard_mode():
+    from repo2rlenv.pipelines.pr_swegemma_runtime import _build_instruction as swegemma_build_instr
+
+    pr = _make_pr("Some description here\nLine 2", title="Fix some bug")
+    instr = _build_instruction(pr, hard_mode=True)
+    assert instr == "Fix some bug\n\nSome description here\nLine 2"
+    assert swegemma_build_instr(pr, hard_mode=True) == "Fix some bug\n\nSome description here\nLine 2"
+
+    pr_empty_body = _make_pr("", title="Fix without description")
+    instr_empty = _build_instruction(pr_empty_body, hard_mode=True)
+    assert instr_empty == "Fix without description"
+    assert swegemma_build_instr(pr_empty_body, hard_mode=True) == "Fix without description"
+
+
+def test_targeted_test_cmds_filters_helper_files():
+    from repo2rlenv.pipelines.pr_swegemma_runtime import (
+        targeted_test_cmds_for_pr as swegemma_targeted_test_cmds_for_pr,
+    )
+
+    test_files = [
+        "tests/__init__.py",
+        "tests/main.py",
+        "tests/test_application.py",
+        "tests/conftest.py",
+        "tests/utils.py",
+    ]
+    out = targeted_test_cmds_for_pr(["pytest -v"], test_files)
+    assert out == ["pytest -v tests/test_application.py"]
+    assert swegemma_targeted_test_cmds_for_pr(["pytest -v"], test_files) == [
+        "pytest -v tests/test_application.py"
+    ]
+
+
+def test_pr_runtime_options_new_flags():
+    from repo2rlenv.spec.options import PRRuntimeOptions, parse_options
+
+    opts = PRRuntimeOptions(hard_mode=True, concurrency=16)
+    assert opts.hard_mode is True
+    assert opts.concurrency == 16
+
+    parsed = parse_options(
+        "pr_runtime",
+        {"hard_mode": True, "concurrency": 16},
+    )
+    assert parsed.hard_mode is True
+    assert parsed.concurrency == 16
+
+
+def test_llm_spec_and_do_complete_reasoning_effort(monkeypatch):
+    import litellm
+    from repo2rlenv.llm import _do_complete, complete
+    from repo2rlenv.spec.input import LLMSpec
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    spec = LLMSpec(provider="openai", model="thinkingmachines/Inkling", reasoning_effort="high")
+    assert spec.reasoning_effort == "high"
+
+    recorded_kwargs = {}
+
+    class DummyResponse:
+        choices = [type("Choice", (), {"message": type("Message", (), {"content": "ok"})()})()]
+        usage = {"prompt_tokens": 10, "completion_tokens": 20}
+
+    def fake_completion(**kwargs):
+        recorded_kwargs.update(kwargs)
+        return DummyResponse()
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm, "completion_cost", lambda **kwargs: 0.0)
+
+    _do_complete(spec, system=None, user="hi", max_tokens=2048, temperature=0.7)
+    assert "temperature" not in recorded_kwargs
+    assert recorded_kwargs["reasoning_effort"] == "high"
+
+    recorded_kwargs.clear()
+    num_spec = LLMSpec(provider="openai", model="thinkingmachines/Inkling", reasoning_effort=0.8)
+    _do_complete(num_spec, system=None, user="hi", max_tokens=2048, temperature=0.7)
+    assert "temperature" not in recorded_kwargs
+    assert recorded_kwargs["extra_body"]["reasoning_effort"] == 0.8
+    assert recorded_kwargs["extra_body"]["tool_choice"] == "auto"
+
+    recorded_kwargs.clear()
+    complete(spec, user="hi", max_tokens=1024)
+    assert recorded_kwargs["max_tokens"] == 16384
+
+
+def test_pr_swegemma_runtime_initial_attrs():
+    from repo2rlenv import github
+    pipeline = _make_swegemma_pipeline()
+    assert pipeline._token is None
+    assert pipeline._provider is github
+
+
+def test_pr_swegemma_runtime_skips_rebuild_cmds_for_python(monkeypatch, tmp_path):
+    from repo2rlenv import github
+    from repo2rlenv.github import PullRequestSummary
+    from repo2rlenv.pipelines.pr_runtime_validate import ValidationOutcome
+
+    pipeline = _make_swegemma_pipeline()
+    pipeline.bootstrap.rebuild_cmds = ["pip install -e ."]
+    pipeline.options.prs = [4077]
+    pipeline.options.skip_validation = False
+
+    pr_mock = PullRequestSummary(
+        number=4077,
+        title="proxy isatty",
+        body="Fixes #4041",
+        state="MERGED",
+        merged_at="2026-04-12T04:11:19Z",
+        base_ref="master",
+        base_sha="58ac15120fe254886c10d6253667733c83604cb4",
+        head_sha="494b795031782c694297d2db78bd04fb8c82f590",
+        is_draft=False,
+        url="https://github.com/Textualize/rich/pull/4077",
+        changed_files=["rich/file_proxy.py", "tests/test_file_proxy.py"],
+    )
+
+    monkeypatch.setattr(github, "fetch_pr_summary", lambda *a, **kw: pr_mock)
+    monkeypatch.setattr(github, "fetch_pr_diff", lambda *a, **kw: (
+        "diff --git a/rich/file_proxy.py b/rich/file_proxy.py\n"
+        "--- a/rich/file_proxy.py\n+++ b/rich/file_proxy.py\n@@ -1,1 +1,2 @@\n+x = 1\n"
+        "diff --git a/tests/test_file_proxy.py b/tests/test_file_proxy.py\n"
+        "--- a/tests/test_file_proxy.py\n+++ b/tests/test_file_proxy.py\n@@ -1,1 +1,3 @@\n+def test_new():\n+    pass\n"
+    ))
+    monkeypatch.setattr(pipeline, "_start_validation_sandbox", lambda: None)
+
+    recorded_validate_kwargs = {}
+
+    def fake_validate_pr(**kwargs):
+        recorded_validate_kwargs.update(kwargs)
+        return ValidationOutcome(
+            status="verified",
+            fail_to_pass=["tests/test_file_proxy.py::test_new"],
+            pass_to_pass=[],
+        )
+
+    monkeypatch.setattr("repo2rlenv.pipelines.pr_runtime_validate.validate_pr", fake_validate_pr)
+
+    result = pipeline.run(tmp_path)
+    assert result.emitted == 1
+    # rebuild_cmds should be None because language is Python
+    assert recorded_validate_kwargs["rebuild_cmds"] is None
+
+
+
+
+
+
