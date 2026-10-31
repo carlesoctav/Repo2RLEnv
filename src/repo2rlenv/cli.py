@@ -322,6 +322,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 raise SystemExit(f"unknown --language: {args.language!r}") from exc
         if args.base_image:
             bspec.base_image = args.base_image
+        if getattr(args, "image_registry", None):
+            bspec.image_registry = args.image_registry
         # --max-spend-usd=0 ⇒ no cap; map to None
         if args.max_spend_usd is not None:
             bspec.max_llm_spend_usd = args.max_spend_usd if args.max_spend_usd > 0 else None
@@ -1122,6 +1124,10 @@ def _dispatch(argv: list[str]) -> int:
             "override any BootstrapSpec field (e.g. cache_dir=./envs-matrix/sonnet-4-6, "
             "max_iterations=30, max_seconds=2400). Repeatable."
         ),
+    )
+    g.add_argument(
+        "--image-registry",
+        help="e.g. docker.io/carlesoctav — pushes bootstrap image after build",
     )
     g.add_argument(
         "--force-language",
