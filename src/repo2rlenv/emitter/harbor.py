@@ -163,6 +163,10 @@ def write_harbor_task(task: HarborTask, dest_dir: Path) -> Path:
     (sol_dir / "solve.sh").write_text(
         "#!/bin/bash\n"
         "set -euxo pipefail\n"
+        "for i in $(seq 1 120); do\n"
+        "  if [ -f /ready ]; then break; fi\n"
+        "  sleep 0.5\n"
+        "done\n"
         "cd /workspace\n"
         "git config --global --add safe.directory /workspace\n"
         # Harbor uploads the whole solution/ dir into the container under

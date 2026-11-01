@@ -167,64 +167,67 @@ def _shallow_clone_at_ref(
     """
     url = auth_clone_url(repo_url, token)
 
-    if ref in ("", "HEAD"):
+    # 1. Full clone directly
+    r = _run_git_streaming(
+        ["git", "clone", "--progress", url, str(dest)],
+        token=token,
+        timeout=600,
+        on_progress=on_progress,
+    )
+    if r.returncode == 0:
+        if ref and ref not in ("", "HEAD"):
+            r_chk = subprocess.run(
+                ["git", "-C", str(dest), "checkout", ref],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=60,
+                check=False,
+            )
+            if r_chk.returncode != 0:
+                raise BootstrapError(
+                    f"git checkout {ref!r} failed: {_scrub_token(r_chk.stderr, token).strip()[:400]}"
+                )
+        return
+
+    # 2. Fallback: clone without checkout, fetch ref, checkout ref (full objects, no blob:none)
+    logger.info("plain clone failed, falling back to fetch-by-ref without blob filter")
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    r = _run_git_streaming(
+        ["git", "clone", "--progress", "--no-checkout", url, str(dest)],
+        token=token,
+        timeout=600,
+        on_progress=on_progress,
+    )
+    if r.returncode != 0:
+        raise BootstrapError(
+            f"git clone fallback failed: {_scrub_token(r.stderr, token).strip()[:400]}"
+        )
+    if ref and ref not in ("", "HEAD"):
         r = _run_git_streaming(
-            ["git", "clone", "--progress", "--depth", str(depth), url, str(dest)],
+            ["git", "-C", str(dest), "fetch", "--progress", "origin", ref],
             token=token,
             timeout=300,
             on_progress=on_progress,
         )
         if r.returncode != 0:
-            raise BootstrapError(f"git clone failed: {_scrub_token(r.stderr, token).strip()[:400]}")
-        return
-
-    # Try clone --branch first; works for branches and tags
-    r = _run_git_streaming(
-        ["git", "clone", "--progress", "--depth", str(depth), "--branch", ref, url, str(dest)],
-        token=token,
-        timeout=300,
-        on_progress=on_progress,
-    )
-    if r.returncode == 0:
-        return
-
-    # Fallback: clone default, then fetch + checkout the ref (handles SHAs)
-    logger.info("clone --branch %r failed, falling back to fetch-by-ref", ref)
-    if dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
-    r = _run_git_streaming(
-        ["git", "clone", "--progress", "--filter=blob:none", "--no-checkout", url, str(dest)],
-        token=token,
-        timeout=300,
-        on_progress=on_progress,
-    )
-    if r.returncode != 0:
-        raise BootstrapError(
-            f"git clone (fallback) failed: {_scrub_token(r.stderr, token).strip()[:400]}"
+            raise BootstrapError(
+                f"git fetch origin {ref!r} failed (is this a valid branch/tag/commit?): "
+                f"{_scrub_token(r.stderr, token).strip()[:400]}"
+            )
+        r = subprocess.run(
+            ["git", "-C", str(dest), "checkout", ref],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
         )
-    r = _run_git_streaming(
-        ["git", "-C", str(dest), "fetch", "--progress", "--depth", str(depth), "origin", ref],
-        token=token,
-        timeout=120,
-        on_progress=on_progress,
-    )
-    if r.returncode != 0:
-        raise BootstrapError(
-            f"git fetch origin {ref!r} failed (is this a valid branch/tag/commit?): "
-            f"{_scrub_token(r.stderr, token).strip()[:400]}"
-        )
-    r = subprocess.run(
-        ["git", "-C", str(dest), "checkout", ref],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        check=False,
-    )
-    if r.returncode != 0:
-        raise BootstrapError(
-            f"git checkout {ref!r} failed: {_scrub_token(r.stderr, token).strip()[:400]}"
-        )
+        if r.returncode != 0:
+            raise BootstrapError(
+                f"git checkout {ref!r} failed: {_scrub_token(r.stderr, token).strip()[:400]}"
+            )
 
 
 def _scrub_clone_credentials(clone_dir: Path, repo_url: str) -> None:

@@ -507,6 +507,10 @@ def build_eval_script(
     head = (
         "#!/bin/bash\n"
         "set -uxo pipefail\n"
+        "for i in $(seq 1 120); do\n"
+        "  if [ -f /ready ]; then break; fi\n"
+        "  sleep 0.5\n"
+        "done\n"
         f"{path_prelude}"  # may be empty
         # Harbor mounts the task's tests/ dir at /tests; resolve it so we can
         # read the sibling verifier.py + f2p.json + p2p.json artifacts.

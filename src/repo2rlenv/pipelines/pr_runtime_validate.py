@@ -167,7 +167,7 @@ def _fetch_base_commit(sandbox: DockerSandbox, base_commit: str, *, timeout: int
 
     # Try direct by-sha fetch (works on GitHub since 2017's uploadpack.allowAnySHA1InWant)
     r = sandbox.exec(
-        f"cd /workspace && git fetch --depth 1 origin {base_commit}",
+        f"cd /workspace && git fetch origin {base_commit}",
         timeout=timeout,
     )
     if r.ok:

@@ -97,7 +97,9 @@ def parse_pytest(log: str) -> dict[str, TestStatus]:
                     continue
                 out[tokens[1]] = leading_status
             elif m := _SUMMARY_NAME_RE.match(work):
-                out[m.group("name")] = leading_status
+                name = m.group("name")
+                if "::" in name or name.endswith(".py"):
+                    out[name] = leading_status
             continue
 
         # --- format (1): verbose progress (NAME first, STATUS after) ---

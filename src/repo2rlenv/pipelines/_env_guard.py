@@ -128,6 +128,8 @@ def egress_guard_compose(
             "        git for-each-ref --format='%(refname)' refs/remotes 2>/dev/null | xargs -r -n1 git update-ref -d 2>/dev/null || true",
             "        git reflog expire --expire=now --all 2>/dev/null || true",
             "        git gc --prune=now 2>/dev/null || true",
-            '        exec "$$@"',
+            "        touch /ready",
+            '        if [ $$# -eq 0 ]; then exec sleep infinity; else exec "$$@"; fi',
+            '      - "bash"',
         ]
     return "\n".join(lines) + "\n"

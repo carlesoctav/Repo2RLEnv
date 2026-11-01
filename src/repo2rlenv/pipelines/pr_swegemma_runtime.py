@@ -464,6 +464,10 @@ def build_eval_script(
     head = (
         "#!/bin/bash\n"
         "set -uxo pipefail\n"
+        "for i in $(seq 1 120); do\n"
+        "  if [ -f /ready ]; then break; fi\n"
+        "  sleep 0.5\n"
+        "done\n"
         f"{path_prelude}"  # may be empty
         # Harbor mounts the task's tests/ dir at /tests; resolve it so we can
         # read the sibling verifier.py + f2p.json + p2p.json artifacts.
@@ -1107,8 +1111,8 @@ class PRSWEGemmaRuntimePipeline:
             owner, name = self.input.repo.owner_name
             repo_url = f"https://github.com/{owner}/{name}.git"
             clone_res = sandbox.exec(
-                f"rm -rf /workspace/.keep && git clone --depth 1 {repo_url} /workspace",
-                timeout=180,
+                f"rm -rf /workspace/.keep && git clone {repo_url} /workspace",
+                timeout=300,
             )
             if not clone_res.ok:
                 logger.warning("failed to clone %s in sandbox: %s", repo_url, clone_res.stderr)

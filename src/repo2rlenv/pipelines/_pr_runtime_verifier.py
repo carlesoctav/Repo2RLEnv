@@ -117,7 +117,9 @@ def parse_pytest(log: str) -> dict[str, str]:
                     continue
                 out[tokens[1]] = leading
             elif m := _PYTEST_SUMMARY_NAME_RE.match(work):
-                out[m.group("name")] = leading
+                name = m.group("name")
+                if "::" in name or name.endswith(".py"):
+                    out[name] = leading
             continue
         # Verbose progress (NAME first, STATUS after)
         # Filter non-test output before attempting the backtracking regex.
