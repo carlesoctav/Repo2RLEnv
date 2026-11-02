@@ -36,7 +36,6 @@ FIX_SOURCE_HOSTS: tuple[str, ...] = (
     "files.pythonhosted.org",
     "github.com",
     "api.github.com",
-    "raw.githubusercontent.com",
     "codeload.github.com",
     "objects.githubusercontent.com",
 )

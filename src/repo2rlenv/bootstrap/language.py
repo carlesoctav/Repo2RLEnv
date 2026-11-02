@@ -35,7 +35,7 @@ def detect_language(repo_root: Path) -> LanguageHint:
 def base_image_for(lang: LanguageHint) -> str:
     """Pick a sensible base image per language."""
     return {
-        LanguageHint.PYTHON: "python:3.13",
+        LanguageHint.PYTHON: "carlesoctav/swegemm-base",
         LanguageHint.NODE: "node:22-slim",
         LanguageHint.GO: "golang:1.23",
         LanguageHint.RUST: "rust:1-slim",

@@ -43,11 +43,13 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, TYPE_CHECKING
+from typing import Any, ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from repo2rlenv.bootstrap.docker import DockerSandbox
     from repo2rlenv.pipelines.pr_runtime_validate import ValidationOutcome
+
+from pydantic import BaseModel, Field
 
 from repo2rlenv import github
 from repo2rlenv.auth import resolve_repo_token
@@ -55,6 +57,7 @@ from repo2rlenv.bootstrap.spec import BootstrapResult
 from repo2rlenv.emitter.harbor import HarborTask, write_harbor_task
 from repo2rlenv.github import GitHubError, PullRequestSummary
 from repo2rlenv.gitlab import GitLabError
+from repo2rlenv.llm import complete
 from repo2rlenv.pipelines._env_guard import (
     egress_guard_compose,
     fix_source_hosts,
@@ -63,7 +66,7 @@ from repo2rlenv.pipelines._env_guard import (
 from repo2rlenv.pipelines.base import PipelineResult
 from repo2rlenv.provider import provider_for
 from repo2rlenv.sources import Capability
-from repo2rlenv.spec.input import GenerationInput, PipelineName
+from repo2rlenv.spec.input import GenerationInput, LLMSpec, PipelineName
 from repo2rlenv.spec.options import PRRuntimeOptions
 
 logger = logging.getLogger(__name__)
@@ -320,6 +323,106 @@ def _build_instruction(
         f"The task's test suite verifies your patch by applying it on top of "
         f"the base commit `{pr.base_sha[:12]}` and running the modified tests."
     )
+
+
+_RECIPES_SWE_NEXT = Path(__file__).resolve().parent / "recipes" / "swe_next"
+
+
+def _load_swe_next_assets() -> tuple[str, str]:
+    guide = (_RECIPES_SWE_NEXT / "instruction_prompt.md").read_text(encoding="utf-8")
+    examples = (_RECIPES_SWE_NEXT / "issue_examples.json").read_text(encoding="utf-8")
+    return guide, examples
+
+
+def synthesize_task_instruction(
+    *,
+    pr_title: str,
+    pr_body: str,
+    base_commit: str,
+    fail_to_pass: list[str],
+    pre_log: str = "",
+    issue_title: str = "",
+    issue_body: str = "",
+    patch: str = "",
+    test_patch: str = "",
+    llm_spec: LLMSpec,
+) -> str:
+    guide, examples = _load_swe_next_assets()
+    system_prompt = (
+        f"{guide}\n\n"
+        f"--- IN-CONTEXT EXAMPLES ---\n{examples}\n\n"
+        f"Output format:\n"
+        f"Title: <Title>\n\n"
+        f"Description:\n<Description>\n\n"
+        f"Currently on baseline:\n```python\n...\n```\n\n"
+        f"Requirements:\n...\n\n"
+        f"Actual behavior:\n...\n\n"
+        f"Ground the description in the observed test failures, diffs, and runtime tracebacks.\n"
+        f"The PR diff, solution, and test names are strictly private authoring context: DO NOT reveal any code fix, "
+        f"commit SHAs, PR numbers, or internal test file names.\n"
+        f"IMPORTANT: If new public functions/classes are added by this PR, infer their signatures and return types "
+        f"directly from the Test Patch (Verifier) and specify them under Requirements. DO NOT import unbuilt symbols "
+        f"in the 'Currently on baseline' code snippet."
+    )
+
+    user_parts: list[str] = [
+        f"# PR Title\n{pr_title.strip()}",
+    ]
+    if pr_body.strip():
+        user_parts.append(f"# PR Description / Context\n{pr_body.strip()}")
+    if issue_title.strip() or issue_body.strip():
+        linked_parts = []
+        if issue_title.strip():
+            linked_parts.append(f"Title: {issue_title.strip()}")
+        if issue_body.strip():
+            linked_parts.append(f"Body:\n{issue_body.strip()}")
+        user_parts.append(f"# Linked Issue\n" + "\n\n".join(linked_parts))
+    if patch.strip():
+        patch_snippet = patch.strip()
+        if len(patch_snippet) > 8000:
+            patch_snippet = patch_snippet[:8000] + "\n...[truncated]..."
+        user_parts.append(
+            f"# Solution (Gold Patch - Private Authoring Context)\n```diff\n{patch_snippet}\n```"
+        )
+    if test_patch.strip():
+        test_patch_snippet = test_patch.strip()
+        if len(test_patch_snippet) > 8000:
+            test_patch_snippet = test_patch_snippet[:8000] + "\n...[truncated]..."
+        user_parts.append(
+            f"# Test Patch (Verifier Tests - Private Authoring Context)\n```diff\n{test_patch_snippet}\n```"
+        )
+    if fail_to_pass:
+        user_parts.append(
+            "# Failing Test Targets\n"
+            + "\n".join(f"- {t}" for t in fail_to_pass)
+        )
+    if pre_log.strip():
+        log_snippet = pre_log.strip()
+        if len(log_snippet) > 8000:
+            log_snippet = log_snippet[-8000:]
+        user_parts.append(f"# Baseline Test Execution Log (Pre-Fix Output)\n```\n{log_snippet}\n```")
+    user_prompt = "\n\n".join(user_parts)
+
+    synth_llm = llm_spec.model_copy(update={"reasoning_effort": None})
+    response = complete(
+        synth_llm,
+        system=system_prompt,
+        user=user_prompt,
+        max_tokens=4096,
+    )
+    content = response.content.strip()
+    if "[ISSUE]" in content and "[/ISSUE]" in content:
+        content = content.split("[ISSUE]")[1].split("[/ISSUE]")[0].strip()
+    elif "[ISSUE]" in content:
+        content = content.split("[ISSUE]")[1].strip()
+
+    # Clean up formatting artifacts if present
+    if content.startswith("# Title:"):
+        content = content[2:].lstrip()
+    elif content.startswith("hTitle:"):
+        content = "Title:" + content[7:]
+
+    return content
 
 
 def _word_count(text: str) -> int:

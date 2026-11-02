@@ -43,7 +43,7 @@ _UNIVERSAL_PITFALLS: tuple[str, ...] = (
 
 PRESETS: dict[LanguageHint, LanguagePreset] = {
     LanguageHint.PYTHON: LanguagePreset(
-        base_image="python:3.13",
+        base_image="carlesoctav/swegemm-base",
         apt_packages=("git", "build-essential", "curl", "ca-certificates"),
         install_hints=(
             "Look for `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt`.",
