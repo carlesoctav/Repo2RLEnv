@@ -241,7 +241,6 @@ workspace/
 site/
 
 # Local helper scripts (not for distribution)
-scripts/
 
 # Generated prompt reference; the docs build regenerates it from canonical source files.
 /docs/pipelines/prompts/*
