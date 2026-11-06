@@ -71,7 +71,9 @@ def _run_gh(args: list[str], token: str | None = None) -> str:
                 env=env,
                 check=False,
             )
-            break
+            if proc.returncode == 0 or not read_only or attempt == 2:
+                break
+            time.sleep(1.0 * (2**attempt))
         except subprocess.TimeoutExpired:
             if not read_only or attempt == 2:
                 raise

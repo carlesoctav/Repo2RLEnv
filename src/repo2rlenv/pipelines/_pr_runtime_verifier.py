@@ -511,26 +511,47 @@ def grade(
     p2p_total = len(pass_to_pass)
     f2p_set = set(fail_to_pass)
     p2p_set = set(pass_to_pass)
-    f2p_passed = sum(1 for t in fail_to_pass if status_map.get(t) == PASSED)
-    p2p_passed = sum(1 for t in pass_to_pass if status_map.get(t) == PASSED)
+
+    def _match_status(t: str) -> str | None:
+        if t in status_map:
+            return status_map[t]
+        for k, v in status_map.items():
+            if k == t or k.endswith("::" + t) or k.split("::", 1)[-1] == t:
+                return v
+        return None
+
+    def _is_tracked(k: str) -> bool:
+        if k in f2p_set or k in p2p_set:
+            return True
+        for t in f2p_set:
+            if k == t or k.endswith("::" + t) or k.split("::", 1)[-1] == t:
+                return True
+        for t in p2p_set:
+            if k == t or k.endswith("::" + t) or k.split("::", 1)[-1] == t:
+                return True
+        return False
+
+    f2p_passed = sum(1 for t in fail_to_pass if _match_status(t) == PASSED)
+    p2p_passed = sum(1 for t in pass_to_pass if _match_status(t) == PASSED)
     # Tests that should have stayed green but regressed (PASS->not-pass).
-    regressions = [t for t in pass_to_pass if status_map.get(t) != PASSED]
+    regressions = [t for t in pass_to_pass if _match_status(t) != PASSED]
 
     # FAILED tests outside the tracked sets — the selected command isn't clean.
     if runner == "go":
         failed_tests = {
             t
             for t, s in status_map.items()
-            if s == FAILED and t not in f2p_set and t not in p2p_set
+            if s == FAILED and not _is_tracked(t)
         }
 
         untracked_failed = sorted(t for t in failed_tests if not _has_go_parent(t, status_map))
     else:
-        untracked_failed = sorted(
+        failed_tests = {
             t
             for t, s in status_map.items()
-            if s == FAILED and t not in f2p_set and t not in p2p_set
-        )
+            if s == FAILED and not _is_tracked(t)
+        }
+        untracked_failed = sorted(failed_tests)
 
     f2p_rate = (f2p_passed / f2p_total) if f2p_total else 0.0
     p2p_rate = (p2p_passed / p2p_total) if p2p_total else 1.0

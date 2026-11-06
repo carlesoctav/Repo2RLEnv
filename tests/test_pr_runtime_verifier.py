@@ -335,3 +335,20 @@ def test_main_fallback_exit_nonzero_is_zero(tmp_path: Path):
     out_dir = tmp_path / "verifier"
     main(["--log", log, "--f2p", f2p, "--p2p", p2p, "--exit-code", "1", "--out-dir", str(out_dir)])
     assert (out_dir / "reward.txt").read_text().strip() == "0.000000"
+
+
+def test_grade_unqualified_test_matching():
+    status_map = {
+        "r2e_tests/test_1.py::test_semver": "PASSED",
+        "r2e_tests/test_1.py::test_validator_defaults": "PASSED",
+        "tests/modules/test_foo.py::TestBar::test_baz": "PASSED",
+    }
+    f2p = ["test_semver", "TestBar::test_baz"]
+    p2p = ["test_validator_defaults"]
+    res = grade(f2p, p2p, status_map)
+    assert res["reward"] == 1.0
+    assert res["resolved"] is True
+    assert res["f2p_passed"] == 2
+    assert res["p2p_passed"] == 1
+    assert res["untracked_failed_count"] == 0
+

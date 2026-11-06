@@ -328,9 +328,13 @@ def _build_instruction(
 _RECIPES_SWE_NEXT = Path(__file__).resolve().parent / "recipes" / "swe_next"
 
 
-def _load_swe_next_assets() -> tuple[str, str]:
-    guide = (_RECIPES_SWE_NEXT / "instruction_prompt.md").read_text(encoding="utf-8")
-    examples = (_RECIPES_SWE_NEXT / "issue_examples.json").read_text(encoding="utf-8")
+def _load_swe_next_assets(version: str = "old") -> tuple[str, str]:
+    if version == "old":
+        guide = (_RECIPES_SWE_NEXT / "instruction_prompt_old.md").read_text(encoding="utf-8")
+        examples = (_RECIPES_SWE_NEXT / "issue_examples_old.json").read_text(encoding="utf-8")
+    else:
+        guide = (_RECIPES_SWE_NEXT / "instruction_prompt.md").read_text(encoding="utf-8")
+        examples = (_RECIPES_SWE_NEXT / "issue_examples.json").read_text(encoding="utf-8")
     return guide, examples
 
 
@@ -346,62 +350,125 @@ def synthesize_task_instruction(
     patch: str = "",
     test_patch: str = "",
     llm_spec: LLMSpec,
+    version: str = "old",
 ) -> str:
-    guide, examples = _load_swe_next_assets()
-    system_prompt = (
-        f"{guide}\n\n"
-        f"--- IN-CONTEXT EXAMPLES ---\n{examples}\n\n"
-        f"Output format:\n"
-        f"Title: <Title>\n\n"
-        f"Description:\n<Description>\n\n"
-        f"Currently on baseline:\n```python\n...\n```\n\n"
-        f"Requirements:\n...\n\n"
-        f"Actual behavior:\n...\n\n"
-        f"Ground the description in the observed test failures, diffs, and runtime tracebacks.\n"
-        f"The PR diff, solution, and test names are strictly private authoring context: DO NOT reveal any code fix, "
-        f"commit SHAs, PR numbers, or internal test file names.\n"
-        f"IMPORTANT: If new public functions/classes are added by this PR, infer their signatures and return types "
-        f"directly from the Test Patch (Verifier) and specify them under Requirements. DO NOT import unbuilt symbols "
-        f"in the 'Currently on baseline' code snippet."
-    )
+    guide, examples_raw = _load_swe_next_assets(version=version)
 
-    user_parts: list[str] = [
-        f"# PR Title\n{pr_title.strip()}",
-    ]
-    if pr_body.strip():
-        user_parts.append(f"# PR Description / Context\n{pr_body.strip()}")
-    if issue_title.strip() or issue_body.strip():
-        linked_parts = []
-        if issue_title.strip():
-            linked_parts.append(f"Title: {issue_title.strip()}")
-        if issue_body.strip():
-            linked_parts.append(f"Body:\n{issue_body.strip()}")
-        user_parts.append(f"# Linked Issue\n" + "\n\n".join(linked_parts))
-    if patch.strip():
+    if version == "old":
+        example_list = json.loads(examples_raw)
+        formatted_examples = "\n\n".join(
+            f"Example {i + 1}:\n\n{ex.strip()}\n"
+            for i, ex in enumerate(example_list)
+        )
+
+        commit_msg = pr_title.strip()
+        if pr_body.strip():
+            commit_msg += f"\n\n{pr_body.strip()}"
+
         patch_snippet = patch.strip()
         if len(patch_snippet) > 8000:
             patch_snippet = patch_snippet[:8000] + "\n...[truncated]..."
-        user_parts.append(
-            f"# Solution (Gold Patch - Private Authoring Context)\n```diff\n{patch_snippet}\n```"
-        )
-    if test_patch.strip():
+
         test_patch_snippet = test_patch.strip()
         if len(test_patch_snippet) > 8000:
             test_patch_snippet = test_patch_snippet[:8000] + "\n...[truncated]..."
-        user_parts.append(
-            f"# Test Patch (Verifier Tests - Private Authoring Context)\n```diff\n{test_patch_snippet}\n```"
-        )
-    if fail_to_pass:
-        user_parts.append(
-            "# Failing Test Targets\n"
-            + "\n".join(f"- {t}" for t in fail_to_pass)
-        )
-    if pre_log.strip():
-        log_snippet = pre_log.strip()
+
+        log_snippet = pre_log.strip() if pre_log.strip() else "(tests failed on baseline commit)"
         if len(log_snippet) > 8000:
             log_snippet = log_snippet[-8000:]
-        user_parts.append(f"# Baseline Test Execution Log (Pre-Fix Output)\n```\n{log_snippet}\n```")
-    user_prompt = "\n\n".join(user_parts)
+
+        f2p_str = "\n".join(f"- {t}" for t in fail_to_pass) if fail_to_pass else "(none specified)"
+
+        user_prompt = f"""You are an expert software engineer tasked with creating informative GitHub issues based on commit details and test results. These issues will be used to help junior developers and machine learning systems understand the motivation behind commits. Your goal is to create concise, clear, and realistic issues that highlight bugs without revealing solutions.
+    
+The commit hash is {base_commit}. 
+The commit message is: {commit_msg}
+
+The commit patch is:
+```diff
+{patch_snippet}
+```
+
+Additionally, we can write the following tests to check the correctness of the commit:
+```diff
+{test_patch_snippet}
+```
+
+These tests detect the difference between the old and new commit. Particularly,
+
+following is the execution result on the old commit:
+```
+{log_snippet}
+```
+
+More specifically, the following tests that failed in the old commit now pass in the new commit:
+{f2p_str}
+
+Example Issues:
+
+{formatted_examples}
+
+{guide}
+"""
+        system_prompt = (
+            "You are an expert software engineer tasked with creating informative GitHub issues "
+            "based on commit details and test results."
+        )
+    else:
+        system_prompt = (
+            f"{guide}\n\n"
+            f"--- IN-CONTEXT EXAMPLES ---\n{examples_raw}\n\n"
+            f"Output format:\n"
+            f"Title: <Title>\n\n"
+            f"Description:\n<Description>\n\n"
+            f"Currently on baseline:\n```python\n...\n```\n\n"
+            f"Requirements:\n...\n\n"
+            f"Actual behavior:\n...\n\n"
+            f"Ground the description in the observed test failures, diffs, and runtime tracebacks.\n"
+            f"The PR diff, solution, and test names are strictly private authoring context: DO NOT reveal any code fix, "
+            f"commit SHAs, PR numbers, or internal test file names.\n"
+            f"IMPORTANT: If new public functions/classes are added by this PR, infer their signatures and return types "
+            f"directly from the Test Patch (Verifier) and specify them under Requirements. DO NOT import unbuilt symbols "
+            f"in the 'Currently on baseline' code snippet."
+        )
+
+        user_parts: list[str] = [
+            f"# PR Title\n{pr_title.strip()}",
+        ]
+        if pr_body.strip():
+            user_parts.append(f"# PR Description / Context\n{pr_body.strip()}")
+        if issue_title.strip() or issue_body.strip():
+            linked_parts = []
+            if issue_title.strip():
+                linked_parts.append(f"Title: {issue_title.strip()}")
+            if issue_body.strip():
+                linked_parts.append(f"Body:\n{issue_body.strip()}")
+            user_parts.append(f"# Linked Issue\n" + "\n\n".join(linked_parts))
+        if patch.strip():
+            patch_snippet = patch.strip()
+            if len(patch_snippet) > 8000:
+                patch_snippet = patch_snippet[:8000] + "\n...[truncated]..."
+            user_parts.append(
+                f"# Solution (Gold Patch - Private Authoring Context)\n```diff\n{patch_snippet}\n```"
+            )
+        if test_patch.strip():
+            test_patch_snippet = test_patch.strip()
+            if len(test_patch_snippet) > 8000:
+                test_patch_snippet = test_patch_snippet[:8000] + "\n...[truncated]..."
+            user_parts.append(
+                f"# Test Patch (Verifier Tests - Private Authoring Context)\n```diff\n{test_patch_snippet}\n```"
+            )
+        if fail_to_pass:
+            user_parts.append(
+                "# Failing Test Targets\n"
+                + "\n".join(f"- {t}" for t in fail_to_pass)
+            )
+        if pre_log.strip():
+            log_snippet = pre_log.strip()
+            if len(log_snippet) > 8000:
+                log_snippet = log_snippet[-8000:]
+            user_parts.append(f"# Baseline Test Execution Log (Pre-Fix Output)\n```\n{log_snippet}\n```")
+        user_prompt = "\n\n".join(user_parts)
 
     synth_llm = llm_spec.model_copy(update={"reasoning_effort": None})
     response = complete(
@@ -415,6 +482,10 @@ def synthesize_task_instruction(
         content = content.split("[ISSUE]")[1].split("[/ISSUE]")[0].strip()
     elif "[ISSUE]" in content:
         content = content.split("[ISSUE]")[1].strip()
+
+    # Extract issue starting from Title: if analysis was included
+    if "Title:" in content:
+        content = content[content.find("Title:"):].strip()
 
     # Clean up formatting artifacts if present
     if content.startswith("# Title:"):

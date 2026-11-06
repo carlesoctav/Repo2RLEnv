@@ -71,7 +71,6 @@ def _build_stage_script(
         # the clean doesn't wipe deps the suite needs. See _GIT_CLEAN_EXCLUDES.
         "git clean -fdx -e .venv -e venv -e __pycache__ -e .tox "
         "-e node_modules -e target -e vendor -e .gradle -e .next -e .pytest_cache -e pytest.ini -e conftest.py || true",
-        "if [ -f /sandbox/setup.py ]; then python3 /sandbox/setup.py --workspace /workspace >/dev/null 2>&1 || true; fi",
     ]
     if apply_patch and apply_patch.strip():
         parts.append(_heredoc_apply(apply_patch))
