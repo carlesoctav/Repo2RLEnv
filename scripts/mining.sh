@@ -2,7 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$SCRIPT_DIR"
+if [ -f "$SCRIPT_DIR/scripts/incremental_miner.py" ]; then
+  REPO_ROOT="$SCRIPT_DIR"
+elif [ -f "$SCRIPT_DIR/../scripts/incremental_miner.py" ]; then
+  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+  REPO_ROOT="$(pwd)"
+fi
 
 # Activate virtualenv if present
 if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
@@ -19,7 +25,7 @@ if [ -f "$REPO_ROOT/.env" ]; then
 fi
 
 BASE_IMAGE="${BASE_IMAGE:-carlesoctav/swegemma}"
-LLM="${LLM:-openai/thinkingmachines/Inkling-Small}"
+LLM="${LLM:-openai/thinkingmachines/Inkling-2-Small}"
 LLM_ENDPOINT="${LLM_ENDPOINT:-https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1}"
 LLM_KEY_ENV="${LLM_KEY_ENV:-TINKER_API_KEY}"
 REASONING_EFFORT="${REASONING_EFFORT:-high}"
@@ -30,15 +36,18 @@ MAX_SECONDS="${MAX_SECONDS:-86400}"
 MAX_SPEND_USD="${MAX_SPEND_USD:-0}"
 SUCCESS_LIMIT="${SUCCESS_LIMIT:-50}"
 LIMIT="${LIMIT:-500}"
+SINCE="${SINCE:-2024-01-01}"
 MAX_FILES="${MAX_FILES:-30}"
 OUT_BASE="${OUT_BASE:-train_new}"
+EXCLUDE_DIRS="${EXCLUDE_DIRS:-test,data/test}"
+REVERSE="${REVERSE:-true}"
 
 # Target repositories
 REPOS=(
   "encode/httpx"
-  "psf/requests"
   "tiangolo/fastapi"
   "Textualize/rich"
+  "psf/requests"
   "encode/starlette"
   "tiangolo/sqlmodel"
   "tiangolo/typer"
@@ -70,6 +79,16 @@ for repo in "${RUN_REPOS[@]}"; do
   out_dir="$REPO_ROOT/$OUT_BASE/$repo_name"
   mkdir -p "$out_dir"
 
+  if [ -f "$out_dir/.complete" ]; then
+    echo "Skipping $repo ($out_dir/.complete exists)"
+    continue
+  fi
+
+  if [ -d "$out_dir/hard" ] && [ "$(ls -1 "$out_dir/hard" 2>/dev/null | wc -l)" -ge "$SUCCESS_LIMIT" ]; then
+    echo "Skipping $repo ($out_dir/hard already has >= $SUCCESS_LIMIT tasks)"
+    continue
+  fi
+
   echo "=========================================================="
   echo "Incremental Mining $repo -> $out_dir (limit=$LIMIT)"
   echo "Outputs: $out_dir/hard, $out_dir/easy, and $out_dir/fix-desc"
@@ -79,12 +98,17 @@ for repo in "${RUN_REPOS[@]}"; do
   if [ -n "$BASE_IMAGE" ]; then
     EXTRA_ARGS+=(--base-image "$BASE_IMAGE")
   fi
+  if [ "$REVERSE" = "true" ]; then
+    EXTRA_ARGS+=(--reverse)
+  fi
 
   uv run python "$REPO_ROOT/scripts/incremental_miner.py" \
     --repo "$repo" \
     --out "$out_dir" \
     --limit "$LIMIT" \
+    --since "$SINCE" \
     --max-success "$SUCCESS_LIMIT" \
+    --exclude-dirs "$EXCLUDE_DIRS" \
     --max-source-files "$MAX_FILES" \
     --llm "$LLM" \
     --llm-endpoint "$LLM_ENDPOINT" \
@@ -96,4 +120,6 @@ for repo in "${RUN_REPOS[@]}"; do
     --max-seconds "$MAX_SECONDS" \
     --max-spend-usd "$MAX_SPEND_USD" \
     "${EXTRA_ARGS[@]}"
+
+  touch "$out_dir/.complete"
 done

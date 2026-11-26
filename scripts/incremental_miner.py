@@ -103,6 +103,8 @@ def is_environment_crash(outcome: ValidationOutcome) -> bool:
     """Check if validation failed due to an environment / runner crash."""
     if outcome.status == "verified":
         return False
+    if outcome.reason == "no fail-to-pass tests after validation":
+        return False
     # If the patch simply didn't apply to git, it's not a container environment crash
     if "failed to apply at base_commit" in (outcome.reason or ""):
         return False
@@ -210,6 +212,8 @@ def emit_tasks_all_modes(
         ),
     }
 
+    env_dockerfile = bootstrap.dockerfile_reconstruction if bootstrap.dockerfile_reconstruction else None
+
     # 1. Hard mode: PR title + body
     instr_hard = _build_instruction(pr, owner, name, token=token, hard_mode=True)
     task_hard = HarborTask(
@@ -223,7 +227,7 @@ def emit_tasks_all_modes(
         category="bugfix",
         keywords=[name, "pr_swegemma_runtime", "hard"],
         docker_image=image_ref,
-        environment_dockerfile=None,
+        environment_dockerfile=env_dockerfile,
         test_script=eval_script,
         aux_files=aux_files,
     )
@@ -242,7 +246,7 @@ def emit_tasks_all_modes(
         category="bugfix",
         keywords=[name, "pr_swegemma_runtime", "easy"],
         docker_image=image_ref,
-        environment_dockerfile=None,
+        environment_dockerfile=env_dockerfile,
         test_script=eval_script,
         aux_files=aux_files,
     )
@@ -280,7 +284,7 @@ def emit_tasks_all_modes(
         category="bugfix",
         keywords=[name, "pr_swegemma_runtime", "fix-desc"],
         docker_image=image_ref,
-        environment_dockerfile=None,
+        environment_dockerfile=env_dockerfile,
         test_script=eval_script,
         aux_files=aux_files,
     )
@@ -310,6 +314,7 @@ def main():
         endpoint=args.llm_endpoint,
         api_key_env=args.llm_key_env,
         reasoning_effort=args.reasoning_effort,
+        timeout_sec=600,
     )
 
     spend_cap = args.max_spend_usd if args.max_spend_usd and args.max_spend_usd > 0 else None
@@ -434,7 +439,21 @@ def main():
                 pr.base_sha[:12],
             )
 
-            diff = github.fetch_pr_diff(owner, name, pr.number, token=token)
+            task_id = f"{owner}__{name}-{pr.number}"
+            if (out_dir / "hard" / task_id).exists():
+                logger.info("PR #%d: already verified & emitted (%s), skipping", pr.number, task_id)
+                emitted_count += 1
+                if args.max_success > 0 and emitted_count >= args.max_success:
+                    logger.info("Reached target success limit (%d verified tasks). Stopping.", args.max_success)
+                    break
+                continue
+
+            try:
+                diff = github.fetch_pr_diff(owner, name, pr.number, token=token)
+            except github.GitHubError as exc:
+                logger.warning("PR #%d: diff fetch failed: %s", pr.number, exc)
+                skipped_count += 1
+                continue
             patch, test_patch = split_patch_and_test_patch(diff)
             if not patch.strip() or not test_patch.strip():
                 logger.info("PR #%d: skipped (empty patch or no test patch)", pr.number)
@@ -460,6 +479,18 @@ def main():
                 test_cmds=targeted_cmds,
                 language=current_bootstrap.language.value,
             )
+
+            if outcome.reason == "no fail-to-pass tests after validation":
+                logger.info(
+                    "PR #%d: skipped (status=%s, f2p=%d, p2p=%d, reason=%s)",
+                    pr.number,
+                    outcome.status,
+                    len(outcome.fail_to_pass),
+                    len(outcome.pass_to_pass),
+                    outcome.reason,
+                )
+                skipped_count += 1
+                continue
 
             # Check for environment crash
             if is_environment_crash(outcome):
